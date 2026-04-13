@@ -1,12 +1,36 @@
 const WebSocket = require('ws');
 const fs = require('fs');
+const path = require('path');
+
+// 🔥 親ディレクトリを冒頭で定義
+const LOG_PARENT = "logs";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
 const wss = new WebSocket.Server({ port });
 
 console.log(`WebSocket server running on ws://localhost:${port}`);
 
-// タイムスタンプ生成（将来ここを変えるだけでOK）
+// 🔥 ログファイルパスを生成する関数
+function getLogFilePath() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+
+  const dateStr = `${yyyy}${mm}${dd}`; // YYYYMMDD
+
+  const dir = path.join(LOG_PARENT, String(port));
+  const file = path.join(dir, `${dateStr}.italk`);
+
+  // ディレクトリが無ければ作成
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  return file;
+}
+
+// タイムスタンプ生成
 function timestamp() {
   const d = new Date();
   return d.toTimeString().split(' ')[0]; // "HH:MM:SS"
@@ -14,20 +38,25 @@ function timestamp() {
 
 // broadcast は「送信＋ログ保存」だけの純粋な処理
 function broadcast(text) {
+  // クライアントへ送信
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(text);
     }
   });
 
-  fs.appendFileSync("chat.log", text + "\n");
+  // ログ保存
+  const logFile = getLogFilePath();
+  fs.appendFileSync(logFile, text + "\n");
 }
 
-// 🔥 ログ取得処理を1か所に集約
+// 🔥 ログ取得処理（共通化）
 function sendRecentLog(ws, num) {
-  if (!fs.existsSync("chat.log")) return; // ログが無ければ何も送らない
+  const logFile = getLogFilePath();
 
-  const content = fs.readFileSync("chat.log", "utf8");
+  if (!fs.existsSync(logFile)) return; // ログが無ければ何も送らない
+
+  const content = fs.readFileSync(logFile, "utf8");
   const lines = content.trim().split("\n");
   const recent = lines.slice(-num);
 
@@ -37,7 +66,7 @@ function sendRecentLog(ws, num) {
 }
 
 wss.on('connection', (ws) => {
-  ws.handle = null;      // 未ログイン状態
+  ws.handle = null;
   ws.isLogout = false;
 
   ws.on('message', (data) => {
@@ -52,14 +81,14 @@ wss.on('connection', (ws) => {
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
 
-      // 🔥 ログイン時に直近10行を送信（共通関数）
+      // 🔥 ログイン時に直近10行を送信
       sendRecentLog(ws, 10);
 
       return;
     }
 
     // -------------------------
-    // 🔥 /r{行数} コマンド（共通関数を使用）
+    // 🔥 /r{行数} コマンド
     // -------------------------
     if (raw.startsWith("/r")) {
       const num = parseInt(raw.slice(2), 10);
