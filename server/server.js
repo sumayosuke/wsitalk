@@ -5,7 +5,7 @@ const wss = new WebSocket.Server({ port });
 
 console.log(`WebSocket server running on ws://localhost:${port}`);
 
-// 🔥 共通の通知送信関数
+// 共通ブロードキャスト関数
 function broadcast(text) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -15,21 +15,25 @@ function broadcast(text) {
 }
 
 wss.on('connection', (ws) => {
-  ws.handle = "匿名";
+  ws.handle = null;      // 🔥 接続直後は未ログイン
   ws.isLogout = false;
 
   ws.on('message', (data) => {
     const text = data.toString().trim();
 
-    // ログインコマンド
-    if (text.startsWith("/login ")) {
-      const handle = text.replace("/login ", "").trim();
-      ws.handle = handle || "匿名";
+    // -------------------------
+    // 🔥 ログイン前（最初のメッセージ）
+    // -------------------------
+    if (ws.handle === null) {
+      ws.handle = text || "匿名";
 
-      // 入室通知
       broadcast(`*** ${ws.handle} が入室しました ***`);
       return;
     }
+
+    // -------------------------
+    // 🔥 ログイン後の処理
+    // -------------------------
 
     // ログアウトコマンド
     if (text === "/q" || text === "/l") {
@@ -43,15 +47,13 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    let notice;
+    if (ws.handle !== null) {
+      const notice = ws.isLogout
+        ? `*** ${ws.handle} がログアウトしました ***`
+        : `*** ${ws.handle} の接続が切れました ***`;
 
-    if (ws.isLogout) {
-      notice = `*** ${ws.handle} がログアウトしました ***`;
-    } else {
-      notice = `*** ${ws.handle} の接続が切れました ***`;
+      broadcast(notice);
+      console.log(notice);
     }
-
-    broadcast(notice);
-    console.log(notice);
   });
 });

@@ -15,6 +15,7 @@
     let handle;
 
     window.onload = () => {
+      // ページを開いたらハンドル名を入力させる
       handle = prompt("ハンドル名を入力してください");
       if (!handle) {
         alert("ハンドル名が必要です");
@@ -25,7 +26,8 @@
       ws = new WebSocket("ws://localhost:8080");
 
       ws.onopen = () => {
-        ws.send(`/login ${handle}`);
+        // 🔥 最初のメッセージとしてハンドル名を送信（/login は不要）
+        ws.send(handle);
       };
 
       ws.onmessage = (event) => {
@@ -35,7 +37,7 @@
       };
 
       ws.onclose = () => {
-        alert("ログアウトしました");
+        alert("接続が終了しました");
         location.reload();
       };
     };
@@ -44,7 +46,7 @@
       const input = document.getElementById("input");
       const text = input.value;
 
-      // ログアウトコマンドはサーバー側で処理
+      // 🔥 ログアウトコマンドはサーバー側で処理
       ws.send(text);
 
       input.value = "";
