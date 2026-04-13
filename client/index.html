@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ja">
+<body>
+  <h2>WebSocket Chat</h2>
+
+  <div id="messages" style="border:1px solid #ccc; height:200px; overflow:auto;"></div>
+
+  <input id="input" type="text" placeholder="メッセージを入力" />
+  <button onclick="sendMessage()">送信</button>
+
+  <script>
+    const ws = new WebSocket("ws://localhost:8080");
+
+    ws.onmessage = (event) => {
+      const messages = document.getElementById("messages");
+      messages.innerHTML += `<div>${event.data}</div>`;
+      messages.scrollTop = messages.scrollHeight;
+    };
+
+    function sendMessage() {
+      const input = document.getElementById("input");
+      ws.send(input.value);
+      input.value = "";
+    }
+  </script>
+</body>
+</html>
