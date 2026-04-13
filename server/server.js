@@ -78,7 +78,7 @@ function sendRecentLog(ws, num) {
 
 wss.on('connection', (ws) => {
   ws.handle = null;
-  ws.id = null;       // 🔥 新規追加：ログイン順 ID
+  ws.id = null;
   ws.isLogout = false;
 
   ws.on('message', (data) => {
@@ -90,13 +90,11 @@ wss.on('connection', (ws) => {
     if (ws.handle === null) {
       ws.handle = raw || "匿名";
 
-      // 🔥 ログイン順 ID を付与
       ws.id = nextUserId++;
-      
+
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
 
-      // ログイン時に直近10行を送信
       sendRecentLog(ws, 10);
 
       return;
@@ -115,8 +113,48 @@ wss.on('connection', (ws) => {
         }
       });
 
-      // 1行ずつ送信
       lines.forEach(line => ws.send(line));
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /p {ID} {message}（旧 /tell）
+    // -------------------------
+    if (raw.startsWith("/p ")) {
+      const parts = raw.split(" ");
+
+      if (parts.length < 3) {
+        ws.send("[/p {ID} {message}] の形式で指定してください");
+        return;
+      }
+
+      const targetIdStr = parts[1];
+      const targetId = parseInt(targetIdStr, 10);
+      const message = parts.slice(2).join(" ");
+
+      let target = null;
+
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN && client.id === targetId) {
+          target = client;
+        }
+      });
+
+      if (!target) {
+        ws.send(`ID ${targetIdStr} のユーザーは見つかりません`);
+        return;
+      }
+
+      const time = timestamp();
+      const senderName = ws.handle;
+      const targetName = target.handle;
+
+      // 送信者に通知
+      ws.send(`[${time}] (p) → ${targetName}: ${message}`);
+
+      // 相手に送信
+      target.send(`[${time}] (p) ${senderName} → あなた: ${message}`);
+
       return;
     }
 
