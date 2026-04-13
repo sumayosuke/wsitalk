@@ -14,6 +14,9 @@ console.log(`WebSocket server running on ws://localhost:${port}`);
 let cachedLogPath = null;
 let cachedDateStr = null;
 
+// 🔥 ログイン順 ID カウンタ
+let nextUserId = 1;
+
 // 🔥 ログファイルパスを生成（キャッシュ対応）
 function getLogFilePath() {
   const now = new Date();
@@ -21,14 +24,12 @@ function getLogFilePath() {
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
 
-  const dateStr = `${yyyy}${mm}${dd}`; // YYYYMMDD
+  const dateStr = `${yyyy}${mm}${dd}`;
 
-  // 日付が同じならキャッシュを返す
   if (cachedDateStr === dateStr) {
     return cachedLogPath;
   }
 
-  // 日付が変わったので新しいパスを生成
   const dir = path.join(LOG_PARENT, String(port));
   const file = path.join(dir, `${dateStr}.italk`);
 
@@ -45,7 +46,7 @@ function getLogFilePath() {
 // タイムスタンプ生成
 function timestamp() {
   const d = new Date();
-  return d.toTimeString().split(' ')[0]; // "HH:MM:SS"
+  return d.toTimeString().split(' ')[0];
 }
 
 // broadcast は「送信＋ログ保存」だけの純粋な処理
@@ -77,6 +78,7 @@ function sendRecentLog(ws, num) {
 
 wss.on('connection', (ws) => {
   ws.handle = null;
+  ws.id = null;       // 🔥 新規追加：ログイン順 ID
   ws.isLogout = false;
 
   ws.on('message', (data) => {
@@ -88,6 +90,9 @@ wss.on('connection', (ws) => {
     if (ws.handle === null) {
       ws.handle = raw || "匿名";
 
+      // 🔥 ログイン順 ID を付与
+      ws.id = nextUserId++;
+      
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
 
@@ -101,15 +106,17 @@ wss.on('connection', (ws) => {
     // 🔥 /w コマンド（ログイン中のユーザー一覧）
     // -------------------------
     if (raw === "/w") {
-      const users = [];
+      const lines = [];
 
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN && client.handle) {
-          users.push(client.handle);
+          const idStr = String(client.id).padStart(4, "0");
+          lines.push(`${idStr} ${client.handle}`);
         }
       });
 
-      ws.send(`現在ログイン中: ${users.join(", ")}`);
+      // 1行ずつ送信
+      lines.forEach(line => ws.send(line));
       return;
     }
 
