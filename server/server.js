@@ -10,7 +10,11 @@ const wss = new WebSocket.Server({ port });
 
 console.log(`WebSocket server running on ws://localhost:${port}`);
 
-// 🔥 ログファイルパスを生成する関数
+// 🔥 ログパスキャッシュ
+let cachedLogPath = null;
+let cachedDateStr = null;
+
+// 🔥 ログファイルパスを生成（キャッシュ対応）
 function getLogFilePath() {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -19,13 +23,21 @@ function getLogFilePath() {
 
   const dateStr = `${yyyy}${mm}${dd}`; // YYYYMMDD
 
+  // 🔥 日付が同じならキャッシュを返す
+  if (cachedDateStr === dateStr) {
+    return cachedLogPath;
+  }
+
+  // 🔥 日付が変わったので新しいパスを生成
   const dir = path.join(LOG_PARENT, String(port));
   const file = path.join(dir, `${dateStr}.italk`);
 
-  // ディレクトリが無ければ作成
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  cachedLogPath = file;
+  cachedDateStr = dateStr;
 
   return file;
 }
@@ -66,7 +78,7 @@ function sendRecentLog(ws, num) {
 }
 
 wss.on('connection', (ws) => {
-  ws.handle = null;
+  ws.handle = null;      // 未ログイン状態
   ws.isLogout = false;
 
   ws.on('message', (data) => {
