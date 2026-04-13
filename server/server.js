@@ -23,12 +23,12 @@ function getLogFilePath() {
 
   const dateStr = `${yyyy}${mm}${dd}`; // YYYYMMDD
 
-  // 🔥 日付が同じならキャッシュを返す
+  // 日付が同じならキャッシュを返す
   if (cachedDateStr === dateStr) {
     return cachedLogPath;
   }
 
-  // 🔥 日付が変わったので新しいパスを生成
+  // 日付が変わったので新しいパスを生成
   const dir = path.join(LOG_PARENT, String(port));
   const file = path.join(dir, `${dateStr}.italk`);
 
@@ -50,14 +50,12 @@ function timestamp() {
 
 // broadcast は「送信＋ログ保存」だけの純粋な処理
 function broadcast(text) {
-  // クライアントへ送信
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(text);
     }
   });
 
-  // ログ保存
   const logFile = getLogFilePath();
   fs.appendFileSync(logFile, text + "\n");
 }
@@ -66,7 +64,7 @@ function broadcast(text) {
 function sendRecentLog(ws, num) {
   const logFile = getLogFilePath();
 
-  if (!fs.existsSync(logFile)) return; // ログが無ければ何も送らない
+  if (!fs.existsSync(logFile)) return;
 
   const content = fs.readFileSync(logFile, "utf8");
   const lines = content.trim().split("\n");
@@ -78,7 +76,7 @@ function sendRecentLog(ws, num) {
 }
 
 wss.on('connection', (ws) => {
-  ws.handle = null;      // 未ログイン状態
+  ws.handle = null;
   ws.isLogout = false;
 
   ws.on('message', (data) => {
@@ -93,9 +91,25 @@ wss.on('connection', (ws) => {
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
 
-      // 🔥 ログイン時に直近10行を送信
+      // ログイン時に直近10行を送信
       sendRecentLog(ws, 10);
 
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /w コマンド（ログイン中のユーザー一覧）
+    // -------------------------
+    if (raw === "/w") {
+      const users = [];
+
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN && client.handle) {
+          users.push(client.handle);
+        }
+      });
+
+      ws.send(`現在ログイン中: ${users.join(", ")}`);
       return;
     }
 
