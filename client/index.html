@@ -3,23 +3,50 @@
 <body>
   <h2>WebSocket Chat</h2>
 
-  <div id="messages" style="border:1px solid #ccc; height:200px; overflow:auto;"></div>
+  <div id="chat">
+    <div id="messages" style="border:1px solid #ccc; height:200px; overflow:auto;"></div>
 
-  <input id="input" type="text" placeholder="メッセージを入力" />
-  <button onclick="sendMessage()">送信</button>
+    <input id="input" type="text" placeholder="メッセージを入力 (/q または /l でログアウト)" />
+    <button onclick="sendMessage()">送信</button>
+  </div>
 
   <script>
-    const ws = new WebSocket("ws://localhost:8080");
+    let ws;
+    let handle;
 
-    ws.onmessage = (event) => {
-      const messages = document.getElementById("messages");
-      messages.innerHTML += `<div>${event.data}</div>`;
-      messages.scrollTop = messages.scrollHeight;
+    window.onload = () => {
+      handle = prompt("ハンドル名を入力してください");
+      if (!handle) {
+        alert("ハンドル名が必要です");
+        location.reload();
+        return;
+      }
+
+      ws = new WebSocket("ws://localhost:8080");
+
+      ws.onopen = () => {
+        ws.send(`/login ${handle}`);
+      };
+
+      ws.onmessage = (event) => {
+        const messages = document.getElementById("messages");
+        messages.innerHTML += `<div>${event.data}</div>`;
+        messages.scrollTop = messages.scrollHeight;
+      };
+
+      ws.onclose = () => {
+        alert("ログアウトしました");
+        location.reload();
+      };
     };
 
     function sendMessage() {
       const input = document.getElementById("input");
-      ws.send(input.value);
+      const text = input.value;
+
+      // ログアウトコマンドはサーバー側で処理
+      ws.send(text);
+
       input.value = "";
     }
   </script>
