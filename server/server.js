@@ -23,6 +23,19 @@ function broadcast(text) {
   fs.appendFileSync("chat.log", text + "\n");
 }
 
+// 🔥 ログ取得処理を1か所に集約
+function sendRecentLog(ws, num) {
+  if (!fs.existsSync("chat.log")) return; // ログが無ければ何も送らない
+
+  const content = fs.readFileSync("chat.log", "utf8");
+  const lines = content.trim().split("\n");
+  const recent = lines.slice(-num);
+
+  recent.forEach(line => {
+    ws.send(line);
+  });
+}
+
 wss.on('connection', (ws) => {
   ws.handle = null;      // 未ログイン状態
   ws.isLogout = false;
@@ -38,29 +51,21 @@ wss.on('connection', (ws) => {
 
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
+
+      // 🔥 ログイン時に直近10行を送信（共通関数）
+      sendRecentLog(ws, 10);
+
       return;
     }
 
     // -------------------------
-    // 🔥 /r{行数} コマンド
+    // 🔥 /r{行数} コマンド（共通関数を使用）
     // -------------------------
     if (raw.startsWith("/r")) {
       const num = parseInt(raw.slice(2), 10);
 
       if (!isNaN(num) && num > 0) {
-
-        // ログが無ければ何も送らない
-        if (fs.existsSync("chat.log")) {
-          const content = fs.readFileSync("chat.log", "utf8");
-          const lines = content.trim().split("\n");
-          const recent = lines.slice(-num);
-
-          // このユーザーにだけ送信
-          recent.forEach(line => {
-            ws.send(line);
-          });
-        }
-
+        sendRecentLog(ws, num);
       } else {
         ws.send("[/r{行数} の形式で指定してください]");
       }
