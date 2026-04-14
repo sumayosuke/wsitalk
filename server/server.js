@@ -46,10 +46,33 @@ function getLogFilePath() {
   return file;
 }
 
-// タイムスタンプ生成
+// タイムスタンプ生成（ログ用）
 function timestamp() {
   const d = new Date();
   return d.toTimeString().split(' ')[0];
+}
+
+// 🔥 ログイン日時保存用（YYYY-MM-DD HH:MM:SS）
+function loginTimestamp() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+// 🔥 経過時間（秒 → 12h23m45s）
+function formatDuration(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+
+  if (h > 0) return `${h}h${m}m${s}s`;
+  if (m > 0) return `${m}m${s}s`;
+  return `${s}s`;
 }
 
 // broadcast は「送信＋ログ保存」だけの純粋な処理
@@ -79,20 +102,18 @@ function sendRecentLog(ws, num) {
   });
 }
 
-// 🔥 伝言ファイルパス
+// 🔥 伝言ファイルパス（ハンドル名は URL エンコード）
 function getMessageFilePath(handle) {
   const dir = path.join(MSG_PARENT, String(port));
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // 🔥 ハンドル名を URL エンコードして ASCII のみのファイル名にする
   const safe = encodeURIComponent(handle);
-
   return path.join(dir, `${safe}.msg`);
 }
 
-// 🔥 伝言を保存
+// 🔥 伝言保存
 function saveMessage(targetHandle, message) {
   const file = getMessageFilePath(targetHandle);
   fs.appendFileSync(file, message + "\n");
@@ -118,6 +139,9 @@ wss.on('connection', (ws) => {
   ws.id = null;
   ws.isLogout = false;
 
+  ws.loginTime = null;   // 🔥 ログイン時刻（メモリ）
+  ws.lastActive = null;  // 🔥 最終発言時刻（メモリ）
+
   ws.on('message', (data) => {
     const raw = data.toString().trim();
 
@@ -127,6 +151,12 @@ wss.on('connection', (ws) => {
     if (ws.handle === null) {
       ws.handle = raw || "匿名";
       ws.id = nextUserId++;
+
+      // 🔥 ログイン時刻をメモリに保存
+      ws.loginTime = loginTimestamp();
+
+      // 🔥 最終発言時刻もログイン時刻で初期化
+      ws.lastActive = Date.now();
 
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
@@ -140,15 +170,23 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /w コマンド
+    // 🔥 /w コマンド（ログイン時刻 + 最終発言からの経過時間）
     // -------------------------
     if (raw === "/w") {
+      const now = Date.now();
       const lines = [];
 
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN && client.handle) {
           const idStr = String(client.id).padStart(4, "0");
-          lines.push(`${idStr} ${client.handle}`);
+
+          const logintime = client.loginTime || "unknown";
+
+          const last = client.lastActive || now;
+          const diffSec = Math.floor((now - last) / 1000);
+          const elapsed = formatDuration(diffSec);
+
+          lines.push(`${idStr} ${client.handle} ${logintime} ${elapsed}`);
         }
       });
 
@@ -191,6 +229,9 @@ wss.on('connection', (ws) => {
       ws.send(`[${time}] (p) → ${targetName}: ${message}`);
       target.send(`[${time}] (p) ${senderName} → あなた: ${message}`);
 
+      // 🔥 最終発言時刻更新
+      ws.lastActive = Date.now();
+
       return;
     }
 
@@ -224,6 +265,9 @@ wss.on('connection', (ws) => {
     const msg = `[${timestamp()}] ${ws.handle}: ${raw}`;
     broadcast(msg);
 
+    // 🔥 最終発言時刻更新
+    ws.lastActive = Date.now();
+
     // -------------------------
     // 🔥 broadcast の後で伝言処理
     // -------------------------
@@ -231,10 +275,7 @@ wss.on('connection', (ws) => {
       const [body, targetHandle] = raw.split(">>");
 
       if (body && targetHandle) {
-        // 伝言ファイルに保存
         saveMessage(targetHandle, `${ws.handle}: ${body}`);
-
-        // 伝言を預かったことを送り主にだけ通知
         ws.send(`伝言を ${targetHandle} に預かりました`);
       }
     }
