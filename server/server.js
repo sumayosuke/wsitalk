@@ -244,6 +244,30 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
+    // 🔥 /h {新ハンドル}（ハンドル変更）
+    // -------------------------
+    if (raw.startsWith("/h ")) {
+      const newHandle = raw.slice(3).trim();
+
+      if (!newHandle) {
+        ws.send("[/h {新ハンドル}] の形式で指定してください");
+        return;
+      }
+
+      const oldHandle = ws.handle;
+
+      ws.handle = newHandle;
+
+      const msg = `[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`;
+      broadcast(msg);
+
+      replayMessages(newHandle);
+      replayUMessages(newHandle, ws);
+
+      return;
+    }
+
+    // -------------------------
     // 🔥 /m {message}>>{handle}（裏伝言）
     // -------------------------
     if (raw.startsWith("/m ") && raw.includes(">>")) {
