@@ -178,7 +178,6 @@ function replayAllAnnounce(ws, prevLogout) {
     const content = fs.readFileSync(full, "utf8").trim();
     if (!content) return;
 
-    // content は "[日時] 内容"
     const m = content.match(/^
 
 \[(.*?)\]
@@ -245,7 +244,6 @@ wss.on('connection', (ws) => {
       if (prevLogout) {
         ws.send(`前回ログアウト時刻: ${prevLogout}`);
 
-        // 🔥 全ユーザーのアナウンスをチェック
         replayAllAnnounce(ws, prevLogout);
 
         fs.unlinkSync(getUtmpFilePath(ws.handle));
@@ -258,111 +256,16 @@ wss.on('connection', (ws) => {
       replayMessages(ws.handle);
       replayUMessages(ws.handle, ws);
 
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /al アナウンス一覧（先に判定）
-    // -------------------------
-    if (raw === "/al") {
-      const dir = path.join(MSG_PARENT, String(port));
-
-      if (!fs.existsSync(dir)) {
-        ws.send("(アナウンス一覧) 現在アナウンスはありません");
-        return;
-      }
-
-      const files = fs.readdirSync(dir).filter(f => f.endsWith(".ann"));
-
-      if (files.length === 0) {
-        ws.send("(アナウンス一覧) 現在アナウンスはありません");
-        return;
-      }
-
-      ws.send("(アナウンス一覧)");
-
-      files.forEach(file => {
-        const sender = decodeURIComponent(file.replace(".ann", ""));
-        const full = path.join(dir, file);
-
-        const content = fs.readFileSync(full, "utf8").trim();
-        if (!content) return;
-
-        ws.send(`${sender} ${content}`);
-      });
+      ws.send("コマンド一覧は /? で表示できます");
 
       return;
     }
+    // =========================================================
+    // ここからコマンド処理（/? の順番に並べ替え済み）
+    // =========================================================
 
     // -------------------------
-    // 🔥 /a アナウンス（削除 or 発信）
-    // -------------------------
-    if (raw === "/a") {
-      const file = getAnnFilePath(ws.handle);
-
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file);
-        broadcast(`[${timestamp()}] *** ${ws.handle} のアナウンスが削除されました ***`);
-      }
-
-      return;
-    }
-
-    if (raw.startsWith("/a ")) {
-      const ann = raw.slice(3).trim();
-      if (!ann) {
-        ws.send("[/a {アナウンス}] の形式で指定してください");
-        return;
-      }
-
-      broadcast(`[${timestamp()}] (アナウンス) ${ws.handle}: ${ann}`);
-
-      fs.writeFileSync(getAnnFilePath(ws.handle), `[${formatDateTime()}] ${ann}`);
-
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /h ハンドル変更
-    // -------------------------
-    if (raw.startsWith("/h ")) {
-      const newHandle = raw.slice(3).trim();
-      if (!newHandle) {
-        ws.send("[/h {新ハンドル}] の形式で指定してください");
-        return;
-      }
-
-      const oldHandle = ws.handle;
-      ws.handle = newHandle;
-
-      broadcast(`[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`);
-
-      replayMessages(newHandle);
-      replayUMessages(newHandle, ws);
-
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /m 裏伝言
-    // -------------------------
-    if (raw.startsWith("/m ") && raw.includes(">>")) {
-      const body = raw.slice(3);
-      const [message, targetHandle] = body.split(">>");
-
-      if (!message || !targetHandle) {
-        ws.send("[/m {message}>>{handle}] の形式で指定してください");
-        return;
-      }
-
-      saveUMessage(targetHandle, `${ws.handle}: ${message}`);
-      ws.send(`裏伝言を ${targetHandle} に預かりました`);
-
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /w
+    // ① /w 在室者一覧
     // -------------------------
     if (raw === "/w") {
       const now = Date.now();
@@ -379,48 +282,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /p 個別チャット
-    // -------------------------
-    if (raw.startsWith("/p ")) {
-      const parts = raw.split(" ");
-      if (parts.length < 3) {
-        ws.send("[/p {ID} {message}] の形式で指定してください");
-        return;
-      }
-
-      const targetId = parseInt(parts[1], 10);
-      const message = parts.slice(2).join(" ");
-
-      let target = null;
-      wss.clients.forEach(client => {
-        if (client.id === targetId) target = client;
-      });
-
-      if (!target) {
-        ws.send(`ID ${parts[1]} のユーザーは見つかりません`);
-        return;
-      }
-
-      const time = timestamp();
-      ws.send(`[${time}] (p) → ${target.handle}: ${message}`);
-      target.send(`[${time}] (p) ${ws.handle} → あなた: ${message}`);
-
-      ws.lastActive = Date.now();
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /q /l ログアウト
-    // -------------------------
-    if (raw === "/q" || raw === "/l") {
-      ws.isLogout = true;
-      saveLogoutTime(ws.handle, formatDateTime());
-      ws.close();
-      return;
-    }
-
-    // -------------------------
-    // 🔥 /r{行数}
+    // ② /rN ログの最後N行
     // -------------------------
     if (raw.startsWith("/r")) {
       const num = parseInt(raw.slice(2), 10);
@@ -430,7 +292,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /rn 前回ログアウト以降のログ
+    // ③ /rn 前回ログアウト以降のログ
     // -------------------------
     if (raw === "/rn") {
       const prev = loadLogoutTime(ws.handle);
@@ -483,6 +345,169 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
+    // ④ /p 個別チャット
+    // -------------------------
+    if (raw.startsWith("/p ")) {
+      const parts = raw.split(" ");
+      if (parts.length < 3) {
+        ws.send("[/p {ID} {message}] の形式で指定してください");
+        return;
+      }
+
+      const targetId = parseInt(parts[1], 10);
+      const message = parts.slice(2).join(" ");
+
+      let target = null;
+      wss.clients.forEach(client => {
+        if (client.id === targetId) target = client;
+      });
+
+      if (!target) {
+        ws.send(`ID ${parts[1]} のユーザーは見つかりません`);
+        return;
+      }
+
+      const time = timestamp();
+      ws.send(`[${time}] (p) → ${target.handle}: ${message}`);
+      target.send(`[${time}] (p) ${ws.handle} → あなた: ${message}`);
+
+      ws.lastActive = Date.now();
+      return;
+    }
+
+    // -------------------------
+    // ⑤ /m 裏伝言
+    // -------------------------
+    if (raw.startsWith("/m ") && raw.includes(">>")) {
+      const body = raw.slice(3);
+      const [message, targetHandle] = body.split(">>");
+
+      if (!message || !targetHandle) {
+        ws.send("[/m {message}>>{handle}] の形式で指定してください");
+        return;
+      }
+
+      saveUMessage(targetHandle, `${ws.handle}: ${message}`);
+      ws.send(`裏伝言を ${targetHandle} に預かりました`);
+
+      return;
+    }
+
+    // -------------------------
+    // ⑥ /a {msg} アナウンス発信
+    // -------------------------
+    if (raw.startsWith("/a ")) {
+      const ann = raw.slice(3).trim();
+      if (!ann) {
+        ws.send("[/a {アナウンス}] の形式で指定してください");
+        return;
+      }
+
+      broadcast(`[${timestamp()}] (アナウンス) ${ws.handle}: ${ann}`);
+
+      fs.writeFileSync(getAnnFilePath(ws.handle), `[${formatDateTime()}] ${ann}`);
+
+      return;
+    }
+
+    // -------------------------
+    // ⑦ /a アナウンス削除
+    // -------------------------
+    if (raw === "/a") {
+      const file = getAnnFilePath(ws.handle);
+
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+        broadcast(`[${timestamp()}] *** ${ws.handle} のアナウンスが削除されました ***`);
+      }
+
+      return;
+    }
+
+    // -------------------------
+    // ⑧ /al アナウンス一覧
+    // -------------------------
+    if (raw === "/al") {
+      const dir = path.join(MSG_PARENT, String(port));
+
+      if (!fs.existsSync(dir)) {
+        ws.send("(アナウンス一覧) 現在アナウンスはありません");
+        return;
+      }
+
+      const files = fs.readdirSync(dir).filter(f => f.endsWith(".ann"));
+
+      if (files.length === 0) {
+        ws.send("(アナウンス一覧) 現在アナウンスはありません");
+        return;
+      }
+
+      ws.send("(アナウンス一覧)");
+
+      files.forEach(file => {
+        const sender = decodeURIComponent(file.replace(".ann", ""));
+        const full = path.join(dir, file);
+
+        const content = fs.readFileSync(full, "utf8").trim();
+        if (!content) return;
+
+        ws.send(`${sender} ${content}`);
+      });
+
+      return;
+    }
+
+    // -------------------------
+    // ⑨ /h ハンドル変更
+    // -------------------------
+    if (raw.startsWith("/h ")) {
+      const newHandle = raw.slice(3).trim();
+      if (!newHandle) {
+        ws.send("[/h {新ハンドル}] の形式で指定してください");
+        return;
+      }
+
+      const oldHandle = ws.handle;
+      ws.handle = newHandle;
+
+      broadcast(`[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`);
+
+      replayMessages(newHandle);
+      replayUMessages(newHandle, ws);
+
+      return;
+    }
+
+    // -------------------------
+    // ⑩ /q /l ログアウト
+    // -------------------------
+    if (raw === "/q" || raw === "/l") {
+      ws.isLogout = true;
+      saveLogoutTime(ws.handle, formatDateTime());
+      ws.close();
+      return;
+    }
+
+    // -------------------------
+    // ⑪ /? コマンド一覧（最後に置く）
+    // -------------------------
+    if (raw === "/?") {
+      ws.send("(コマンド一覧)");
+      ws.send("/w        : 在室者一覧");
+      ws.send("/rN       : ログの最後N行");
+      ws.send("/rn       : 前回ログアウト以降のログ");
+      ws.send("/p ID msg : 個別チャット");
+      ws.send("/m msg>>h : 裏伝言");
+      ws.send("/a {msg}  : アナウンス発信");
+      ws.send("/a        : 自分のアナウンス削除");
+      ws.send("/al       : アナウンス一覧表示");
+      ws.send("/h {name} : ハンドル名変更");
+      ws.send("/q /l     : ログアウト");
+      ws.send("/?        : この一覧を表示");
+      return;
+    }
+
+    // -------------------------
     // 🔥 通常発言
     // -------------------------
     const msg = `[${timestamp()}] ${ws.handle}: ${raw}`;
@@ -502,6 +527,9 @@ wss.on('connection', (ws) => {
     }
   });
 
+  // =========================================================
+  // 🔥 接続終了処理
+  // =========================================================
   ws.on('close', () => {
     if (ws.handle !== null) {
       const msg = ws.isLogout
