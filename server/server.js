@@ -2,8 +2,11 @@ const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 
-// 🔥 親ディレクトリを冒頭で定義
+// 🔥 親ディレクトリ（ログ）
 const LOG_PARENT = "logs";
+
+// 🔥 親ディレクトリ（伝言）
+const MSG_PARENT = "messages";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
 const wss = new WebSocket.Server({ port });
@@ -76,6 +79,36 @@ function sendRecentLog(ws, num) {
   });
 }
 
+// 🔥 伝言ファイルパス
+function getMessageFilePath(handle) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return path.join(dir, `${handle}.msg`);
+}
+
+// 🔥 伝言を保存
+function saveMessage(targetHandle, message) {
+  const file = getMessageFilePath(targetHandle);
+  fs.appendFileSync(file, message + "\n");
+}
+
+// 🔥 伝言を再生（ログイン時）
+function replayMessages(handle) {
+  const file = getMessageFilePath(handle);
+  if (!fs.existsSync(file)) return;
+
+  const content = fs.readFileSync(file, "utf8");
+  const lines = content.trim().split("\n");
+
+  lines.forEach(line => {
+    broadcast(`[${timestamp()}] (伝言) ${handle} 宛: ${line}`);
+  });
+
+  fs.unlinkSync(file);
+}
+
 wss.on('connection', (ws) => {
   ws.handle = null;
   ws.id = null;
@@ -89,7 +122,6 @@ wss.on('connection', (ws) => {
     // -------------------------
     if (ws.handle === null) {
       ws.handle = raw || "匿名";
-
       ws.id = nextUserId++;
 
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
@@ -97,11 +129,14 @@ wss.on('connection', (ws) => {
 
       sendRecentLog(ws, 10);
 
+      // 🔥 伝言があれば再生
+      replayMessages(ws.handle);
+
       return;
     }
 
     // -------------------------
-    // 🔥 /w コマンド（ログイン中のユーザー一覧）
+    // 🔥 /w コマンド
     // -------------------------
     if (raw === "/w") {
       const lines = [];
@@ -118,7 +153,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /p {ID} {message}（旧 /tell）
+    // 🔥 /p {ID} {message}
     // -------------------------
     if (raw.startsWith("/p ")) {
       const parts = raw.split(" ");
@@ -149,12 +184,18 @@ wss.on('connection', (ws) => {
       const senderName = ws.handle;
       const targetName = target.handle;
 
-      // 送信者に通知
       ws.send(`[${time}] (p) → ${targetName}: ${message}`);
-
-      // 相手に送信
       target.send(`[${time}] (p) ${senderName} → あなた: ${message}`);
 
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /q, /l ログアウト
+    // -------------------------
+    if (raw === "/q" || raw === "/l") {
+      ws.isLogout = true;
+      ws.close();
       return;
     }
 
@@ -174,19 +215,25 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 ログアウトコマンド
-    // -------------------------
-    if (raw === "/q" || raw === "/l") {
-      ws.isLogout = true;
-      ws.close();
-      return;
-    }
-
-    // -------------------------
-    // 🔥 通常メッセージ
+    // 🔥 通常発言（伝言含む） → まずログ記録 & broadcast
     // -------------------------
     const msg = `[${timestamp()}] ${ws.handle}: ${raw}`;
     broadcast(msg);
+
+    // -------------------------
+    // 🔥 broadcast の後で伝言処理
+    // -------------------------
+    if (raw.includes(">>")) {
+      const [body, targetHandle] = raw.split(">>");
+
+      if (body && targetHandle) {
+        // 伝言ファイルに保存
+        saveMessage(targetHandle, `${ws.handle}: ${body}`);
+
+        // 伝言を預かったことを送り主にだけ通知
+        ws.send(`伝言を ${targetHandle} に預かりました`);
+      }
+    }
   });
 
   ws.on('close', () => {
