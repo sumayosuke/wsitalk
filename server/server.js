@@ -1,11 +1,12 @@
-const WebSocket = require('ws');
-const fs = require('fs');
-const path = require('path');
+// =========================================================
+// server.js（最適化版・正規表現マッチ方式）
+// =========================================================
 
-// 🔥 親ディレクトリ（ログ）
+const WebSocket = require("ws");
+const fs = require("fs");
+const path = require("path");
+
 const LOG_PARENT = "logs";
-
-// 🔥 親ディレクトリ（伝言 + utmp + umsg + ann）
 const MSG_PARENT = "messages";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
@@ -13,529 +14,392 @@ const wss = new WebSocket.Server({ port });
 
 console.log(`WebSocket server running on ws://localhost:${port}`);
 
-// 🔥 ログパスキャッシュ
 let cachedLogPath = null;
 let cachedDateStr = null;
-
-// 🔥 ログイン順 ID カウンタ
 let nextUserId = 1;
 
-// 🔥 ログファイルパスを生成（キャッシュ対応）
-function getLogFilePath() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
+// =========================================================
+// 共通ユーティリティ
+// =========================================================
 
-  const dateStr = `${yyyy}${mm}${dd}`;
+const timestamp = () => new Date().toTimeString().split(" ")[0];
 
-  if (cachedDateStr === dateStr) {
-    return cachedLogPath;
-  }
+const formatDateTime = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes()
+  ).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 
-  const dir = path.join(LOG_PARENT, String(port));
-  const file = path.join(dir, `${dateStr}.italk`);
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  cachedLogPath = file;
-  cachedDateStr = dateStr;
-
-  return file;
-}
-
-// タイムスタンプ生成（ログ用）
-function timestamp() {
-  const d = new Date();
-  return d.toTimeString().split(' ')[0];
-}
-
-// 🔥 日時（YYYY-MM-DD HH:MM:SS）
-function formatDateTime(d = new Date()) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-}
-
-// 🔥 経過時間（秒 → 12h23m45s）
-function formatDuration(sec) {
+const formatDuration = (sec) => {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
-
   if (h > 0) return `${h}h${m}m${s}s`;
   if (m > 0) return `${m}m${s}s`;
   return `${s}s`;
+};
+
+// =========================================================
+// ファイルパス生成（共通化）
+// =========================================================
+
+function filePath(type, handle) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${encodeURIComponent(handle)}.${type}`);
 }
 
-// 🔥 YYYYMMDD → Date
-function parseDateYMD(ymd) {
-  const y = parseInt(ymd.slice(0,4), 10);
-  const m = parseInt(ymd.slice(4,6), 10) - 1;
-  const d = parseInt(ymd.slice(6,8), 10);
-  return new Date(y, m, d);
+// =========================================================
+// ログ処理
+// =========================================================
+
+function getLogFilePath() {
+  const now = new Date();
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}${String(now.getDate()).padStart(2, "0")}`;
+
+  if (cachedDateStr === ymd) return cachedLogPath;
+
+  const dir = path.join(LOG_PARENT, String(port));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  cachedLogPath = path.join(dir, `${ymd}.italk`);
+  cachedDateStr = ymd;
+
+  return cachedLogPath;
 }
 
-// 🔥 Date → YYYYMMDD
-function formatYMD(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}${mm}${dd}`;
-}
-
-// broadcast は「送信＋ログ保存」だけの純粋な処理
 function broadcast(text) {
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(text);
-    }
+  wss.clients.forEach((c) => {
+    if (c.readyState === WebSocket.OPEN) c.send(text);
   });
-
-  const logFile = getLogFilePath();
-  fs.appendFileSync(logFile, text + "\n");
+  fs.appendFileSync(getLogFilePath(), text + "\n");
 }
 
-// 🔥 ログ取得処理（共通化）
 function sendRecentLog(ws, num) {
-  const logFile = getLogFilePath();
+  const file = getLogFilePath();
+  if (!fs.existsSync(file)) return;
 
-  if (!fs.existsSync(logFile)) return;
-
-  const content = fs.readFileSync(logFile, "utf8");
-  const lines = content.trim().split("\n");
-  const recent = lines.slice(-num);
-
-  recent.forEach(line => {
-    ws.send(line);
-  });
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n");
+  lines.slice(-num).forEach((line) => ws.send(line));
 }
 
-// 🔥 各種ファイルパス
-function getMessageFilePath(handle) {
-  const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${encodeURIComponent(handle)}.msg`);
-}
+// =========================================================
+// アナウンス・伝言処理
+// =========================================================
 
-function getUMessageFilePath(handle) {
-  const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${encodeURIComponent(handle)}.umsg`);
-}
-
-function getUtmpFilePath(handle) {
-  const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${encodeURIComponent(handle)}.utmp`);
-}
-
-function getAnnFilePath(handle) {
-  const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${encodeURIComponent(handle)}.ann`);
-}
-
-// 🔥 保存処理
-function saveMessage(targetHandle, message) {
-  fs.appendFileSync(getMessageFilePath(targetHandle), message + "\n");
-}
-
-function saveUMessage(targetHandle, message) {
-  fs.appendFileSync(getUMessageFilePath(targetHandle), message + "\n");
-}
-
-function saveLogoutTime(handle, time) {
-  fs.writeFileSync(getUtmpFilePath(handle), time);
-}
-
-function loadLogoutTime(handle) {
-  const file = getUtmpFilePath(handle);
-  if (!fs.existsSync(file)) return null;
-  return fs.readFileSync(file, "utf8").trim();
-}
-
-// 🔥 アナウンス再生（全ユーザーの .ann をチェック）
 function replayAllAnnounce(ws, prevLogout) {
   const dir = path.join(MSG_PARENT, String(port));
   if (!fs.existsSync(dir)) return;
 
   const prev = new Date(prevLogout);
-  const files = fs.readdirSync(dir);
 
-  files.forEach(file => {
-    if (!file.endsWith(".ann")) return;
+  fs.readdirSync(dir)
+    .filter((f) => f.endsWith(".ann"))
+    .forEach((file) => {
+      const sender = decodeURIComponent(file.replace(".ann", ""));
+      const content = fs.readFileSync(path.join(dir, file), "utf8").trim();
+      if (!content) return;
 
-    const sender = decodeURIComponent(file.replace(".ann", ""));
-    const full = path.join(dir, file);
-
-    const content = fs.readFileSync(full, "utf8").trim();
-    if (!content) return;
-
-    const m = content.match(/^
+      const m = content.match(/^
 
 \[(.*?)\]
 
- (.*)$/);
-    if (!m) return;
+/);
+      if (!m) return;
 
-    const time = new Date(m[1]);
-
-    if (time > prev) {
-      ws.send(`(アナウンス) ${sender} ${content}`);
-    }
-  });
+      const time = new Date(m[1]);
+      if (time > prev) ws.send(`(アナウンス) ${sender} ${content}`);
+    });
 }
 
-// 🔥 通常伝言再生
 function replayMessages(handle) {
-  const file = getMessageFilePath(handle);
+  const file = filePath("msg", handle);
   if (!fs.existsSync(file)) return;
 
-  const lines = fs.readFileSync(file, "utf8").trim().split("\n");
-  lines.forEach(line => {
-    broadcast(`[${timestamp()}] (伝言) ${handle} 宛: ${line}`);
-  });
+  fs.readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .forEach((line) =>
+      broadcast(`[${timestamp()}] (伝言) ${handle} 宛: ${line}`)
+    );
 
   fs.unlinkSync(file);
 }
 
-// 🔥 裏伝言再生
 function replayUMessages(handle, ws) {
-  const file = getUMessageFilePath(handle);
+  const file = filePath("umsg", handle);
   if (!fs.existsSync(file)) return;
 
-  const lines = fs.readFileSync(file, "utf8").trim().split("\n");
-  lines.forEach(line => {
-    ws.send(`(裏伝言) ${line}`);
-  });
+  fs.readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .forEach((line) => ws.send(`(裏伝言) ${line}`));
 
   fs.unlinkSync(file);
 }
 
-wss.on('connection', (ws) => {
-  ws.handle = null;
-  ws.id = null;
-  ws.isLogout = false;
+// =========================================================
+// ログイン処理（関数化）
+// =========================================================
 
-  ws.loginTime = null;
-  ws.lastActive = null;
+function handleLogin(ws, raw) {
+  ws.handle = raw || "匿名";
+  ws.id = nextUserId++;
+  ws.loginTime = formatDateTime();
+  ws.lastActive = Date.now();
 
-  ws.on('message', (data) => {
-    const raw = data.toString().trim();
+  const utmp = filePath("utmp", ws.handle);
+  if (fs.existsSync(utmp)) {
+    const prev = fs.readFileSync(utmp, "utf8").trim();
+    ws.send(`前回ログアウト時刻: ${prev}`);
+    replayAllAnnounce(ws, prev);
+    fs.unlinkSync(utmp);
+  }
 
-    // -------------------------
-    // 🔥 ログイン処理
-    // -------------------------
-    if (ws.handle === null) {
-      ws.handle = raw || "匿名";
-      ws.id = nextUserId++;
+  broadcast(`[${timestamp()}] *** ${ws.handle} が入室しました ***`);
 
-      ws.loginTime = formatDateTime();
-      ws.lastActive = Date.now();
+  sendRecentLog(ws, 10);
+  replayMessages(ws.handle);
+  replayUMessages(ws.handle, ws);
 
-      const prevLogout = loadLogoutTime(ws.handle);
-      if (prevLogout) {
-        ws.send(`前回ログアウト時刻: ${prevLogout}`);
+  ws.send("コマンド一覧は /? で表示できます");
+}
+// =========================================================
+// コマンド処理関数（1つずつ独立した関数として定義）
+// =========================================================
 
-        replayAllAnnounce(ws, prevLogout);
-
-        fs.unlinkSync(getUtmpFilePath(ws.handle));
-      }
-
-      broadcast(`[${timestamp()}] *** ${ws.handle} が入室しました ***`);
-
-      sendRecentLog(ws, 10);
-
-      replayMessages(ws.handle);
-      replayUMessages(ws.handle, ws);
-
-      ws.send("コマンド一覧は /? で表示できます");
-
-      return;
+// ① /w 在室者一覧
+function cmdW(ws) {
+  const now = Date.now();
+  wss.clients.forEach((c) => {
+    if (c.readyState === WebSocket.OPEN && c.handle) {
+      const idStr = String(c.id).padStart(4, "0");
+      const diffSec = Math.floor((now - c.lastActive) / 1000);
+      ws.send(`${idStr} ${c.handle} ${c.loginTime} ${formatDuration(diffSec)}`);
     }
-    // =========================================================
-    // ここからコマンド処理（/? の順番に並べ替え済み）
-    // =========================================================
+  });
+}
 
-    // -------------------------
-    // ① /w 在室者一覧
-    // -------------------------
-    if (raw === "/w") {
-      const now = Date.now();
-      wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN && client.handle) {
-          const idStr = String(client.id).padStart(4, "0");
-          const logintime = client.loginTime;
-          const diffSec = Math.floor((now - client.lastActive) / 1000);
-          const elapsed = formatDuration(diffSec);
-          ws.send(`${idStr} ${client.handle} ${logintime} ${elapsed}`);
-        }
-      });
-      return;
-    }
+// ② /rN ログの最後N行
+function cmdR(ws, num) {
+  if (isNaN(num) || num <= 0) {
+    ws.send("[/r{行数}] の形式で指定してください");
+    return;
+  }
+  sendRecentLog(ws, num);
+}
 
-    // -------------------------
-    // ② /rN ログの最後N行
-    // -------------------------
-    if (raw.startsWith("/r")) {
-      const num = parseInt(raw.slice(2), 10);
-      if (!isNaN(num) && num > 0) sendRecentLog(ws, num);
-      else ws.send("[/r{行数}] の形式で指定してください");
-      return;
-    }
+// ③ /rn 前回ログアウト以降のログ
+function cmdRn(ws) {
+  const utmp = filePath("utmp", ws.handle);
+  if (!fs.existsSync(utmp)) {
+    ws.send("前回ログアウト時刻が記録されていません");
+    return;
+  }
 
-    // -------------------------
-    // ③ /rn 前回ログアウト以降のログ
-    // -------------------------
-    if (raw === "/rn") {
-      const prev = loadLogoutTime(ws.handle);
-      if (!prev) {
-        ws.send("前回ログアウト時刻が記録されていません");
-        return;
-      }
+  const prev = new Date(fs.readFileSync(utmp, "utf8").trim());
+  const today = new Date();
+  let cur = new Date(prev.getFullYear(), prev.getMonth(), prev.getDate());
 
-      const prevDate = new Date(prev);
-      const startYMD = formatYMD(prevDate);
-      const endYMD = formatYMD(new Date());
+  while (cur <= today) {
+    const ymd = `${cur.getFullYear()}${String(cur.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}${String(cur.getDate()).padStart(2, "0")}`;
 
-      let cur = parseDateYMD(startYMD);
+    const logFile = path.join(LOG_PARENT, String(port), `${ymd}.italk`);
+    if (fs.existsSync(logFile)) {
+      const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
+      let sending = false;
 
-      while (formatYMD(cur) <= endYMD) {
-        const ymd = formatYMD(cur);
-        const logFile = path.join(LOG_PARENT, String(port), `${ymd}.italk`);
-
-        if (fs.existsSync(logFile)) {
-          const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
-          let sending = false;
-
-          lines.forEach(line => {
-            if (!sending) {
-              const m = line.match(/^
+      lines.forEach((line) => {
+        const m = line.match(/^
 
 \[(\d\d):(\d\d):(\d\d)\]
 
 /);
-              if (m) {
-                const lineDate = new Date(
-                  cur.getFullYear(),
-                  cur.getMonth(),
-                  cur.getDate(),
-                  parseInt(m[1], 10),
-                  parseInt(m[2], 10),
-                  parseInt(m[3], 10)
-                );
-                if (lineDate >= prevDate) sending = true;
-              }
-            }
-            if (sending) ws.send(line);
-          });
+        if (m && !sending) {
+          const lineDate = new Date(
+            cur.getFullYear(),
+            cur.getMonth(),
+            cur.getDate(),
+            parseInt(m[1], 10),
+            parseInt(m[2], 10),
+            parseInt(m[3], 10)
+          );
+          if (lineDate >= prev) sending = true;
         }
-
-        cur.setDate(cur.getDate() + 1);
-      }
-
-      return;
-    }
-
-    // -------------------------
-    // ④ /p 個別チャット
-    // -------------------------
-    if (raw.startsWith("/p ")) {
-      const parts = raw.split(" ");
-      if (parts.length < 3) {
-        ws.send("[/p {ID} {message}] の形式で指定してください");
-        return;
-      }
-
-      const targetId = parseInt(parts[1], 10);
-      const message = parts.slice(2).join(" ");
-
-      let target = null;
-      wss.clients.forEach(client => {
-        if (client.id === targetId) target = client;
+        if (sending) ws.send(line);
       });
+    }
 
-      if (!target) {
-        ws.send(`ID ${parts[1]} のユーザーは見つかりません`);
+    cur.setDate(cur.getDate() + 1);
+  }
+}
+
+// ④ /p ID msg 個別チャット
+function cmdP(ws, id, message) {
+  const targetId = parseInt(id, 10);
+  const target = [...wss.clients].find((c) => c.id === targetId);
+
+  if (!target) {
+    ws.send(`ID ${id} のユーザーは見つかりません`);
+    return;
+  }
+
+  const time = timestamp();
+  ws.send(`[${time}] (p) → ${target.handle}: ${message}`);
+  target.send(`[${time}] (p) ${ws.handle} → あなた: ${message}`);
+  ws.lastActive = Date.now();
+}
+
+// ⑤ /m msg>>handle 裏伝言
+function cmdM(ws, msg, targetHandle) {
+  fs.appendFileSync(filePath("umsg", targetHandle), `${ws.handle}: ${msg}\n`);
+  ws.send(`裏伝言を ${targetHandle} に預かりました`);
+}
+
+// ⑥ /a msg アナウンス発信
+function cmdAWrite(ws, msg) {
+  broadcast(`[${timestamp()}] (アナウンス) ${ws.handle}: ${msg}`);
+  fs.writeFileSync(filePath("ann", ws.handle), `[${formatDateTime()}] ${msg}`);
+}
+
+// ⑦ /a アナウンス削除
+function cmdADelete(ws) {
+  const file = filePath("ann", ws.handle);
+  if (fs.existsSync(file)) {
+    fs.unlinkSync(file);
+    broadcast(`[${timestamp()}] *** ${ws.handle} のアナウンスが削除されました ***`);
+  }
+}
+
+// ⑧ /al アナウンス一覧
+function cmdAl(ws) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) {
+    ws.send("(アナウンス一覧) 現在アナウンスはありません");
+    return;
+  }
+
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".ann"));
+  if (files.length === 0) {
+    ws.send("(アナウンス一覧) 現在アナウンスはありません");
+    return;
+  }
+
+  ws.send("(アナウンス一覧)");
+  files.forEach((file) => {
+    const sender = decodeURIComponent(file.replace(".ann", ""));
+    const content = fs.readFileSync(path.join(dir, file), "utf8").trim();
+    if (content) ws.send(`${sender} ${content}`);
+  });
+}
+
+// ⑨ /h name ハンドル変更
+function cmdH(ws, newHandle) {
+  const oldHandle = ws.handle;
+  ws.handle = newHandle;
+
+  broadcast(`[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`);
+
+  replayMessages(newHandle);
+  replayUMessages(newHandle, ws);
+}
+
+// ⑩ /q /l ログアウト
+function cmdQuit(ws) {
+  fs.writeFileSync(filePath("utmp", ws.handle), formatDateTime());
+  ws.isLogout = true;
+  ws.close();
+}
+
+// ⑪ /? コマンド一覧
+function cmdHelp(ws) {
+  ws.send("(コマンド一覧)");
+  ws.send("/w        : 在室者一覧");
+  ws.send("/rN       : ログの最後N行");
+  ws.send("/rn       : 前回ログアウト以降のログ");
+  ws.send("/p ID msg : 個別チャット");
+  ws.send("/m msg>>h : 裏伝言");
+  ws.send("/a {msg}  : アナウンス発信");
+  ws.send("/a        : 自分のアナウンス削除");
+  ws.send("/al       : アナウンス一覧表示");
+  ws.send("/h {name} : ハンドル名変更");
+  ws.send("/q /l     : ログアウト");
+  ws.send("/?        : この一覧を表示");
+}
+
+// =========================================================
+// 正規表現コマンドテーブル
+// =========================================================
+
+const commandTable = [
+  { pattern: /^\/w$/, handler: (ws) => cmdW(ws) },
+  { pattern: /^\/r(\d+)$/, handler: (ws, m) => cmdR(ws, parseInt(m[1], 10)) },
+  { pattern: /^\/rn$/, handler: (ws) => cmdRn(ws) },
+  { pattern: /^\/p (\d+) (.+)$/, handler: (ws, m) => cmdP(ws, m[1], m[2]) },
+  { pattern: /^\/m (.+)>>(.+)$/, handler: (ws, m) => cmdM(ws, m[1], m[2]) },
+  { pattern: /^\/a (.+)$/, handler: (ws, m) => cmdAWrite(ws, m[1]) },
+  { pattern: /^\/a$/, handler: (ws) => cmdADelete(ws) },
+  { pattern: /^\/al$/, handler: (ws) => cmdAl(ws) },
+  { pattern: /^\/h (.+)$/, handler: (ws, m) => cmdH(ws, m[1]) },
+  { pattern: /^\/q$/, handler: (ws) => cmdQuit(ws) },
+  { pattern: /^\/l$/, handler: (ws) => cmdQuit(ws) },
+  { pattern: /^\/\?$/, handler: (ws) => cmdHelp(ws) },
+];
+
+// =========================================================
+// WebSocket メッセージ処理
+// =========================================================
+
+wss.on("connection", (ws) => {
+  ws.handle = null;
+  ws.id = null;
+  ws.isLogout = false;
+
+  ws.on("message", (data) => {
+    const raw = data.toString().trim();
+
+    // ログイン処理
+    if (ws.handle === null) {
+      handleLogin(ws, raw);
+      return;
+    }
+
+    // コマンドテーブルで処理
+    for (const entry of commandTable) {
+      const m = raw.match(entry.pattern);
+      if (m) {
+        entry.handler(ws, m);
         return;
       }
-
-      const time = timestamp();
-      ws.send(`[${time}] (p) → ${target.handle}: ${message}`);
-      target.send(`[${time}] (p) ${ws.handle} → あなた: ${message}`);
-
-      ws.lastActive = Date.now();
-      return;
     }
 
-    // -------------------------
-    // ⑤ /m 裏伝言
-    // -------------------------
-    if (raw.startsWith("/m ") && raw.includes(">>")) {
-      const body = raw.slice(3);
-      const [message, targetHandle] = body.split(">>");
-
-      if (!message || !targetHandle) {
-        ws.send("[/m {message}>>{handle}] の形式で指定してください");
-        return;
-      }
-
-      saveUMessage(targetHandle, `${ws.handle}: ${message}`);
-      ws.send(`裏伝言を ${targetHandle} に預かりました`);
-
-      return;
-    }
-
-    // -------------------------
-    // ⑥ /a {msg} アナウンス発信
-    // -------------------------
-    if (raw.startsWith("/a ")) {
-      const ann = raw.slice(3).trim();
-      if (!ann) {
-        ws.send("[/a {アナウンス}] の形式で指定してください");
-        return;
-      }
-
-      broadcast(`[${timestamp()}] (アナウンス) ${ws.handle}: ${ann}`);
-
-      fs.writeFileSync(getAnnFilePath(ws.handle), `[${formatDateTime()}] ${ann}`);
-
-      return;
-    }
-
-    // -------------------------
-    // ⑦ /a アナウンス削除
-    // -------------------------
-    if (raw === "/a") {
-      const file = getAnnFilePath(ws.handle);
-
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file);
-        broadcast(`[${timestamp()}] *** ${ws.handle} のアナウンスが削除されました ***`);
-      }
-
-      return;
-    }
-
-    // -------------------------
-    // ⑧ /al アナウンス一覧
-    // -------------------------
-    if (raw === "/al") {
-      const dir = path.join(MSG_PARENT, String(port));
-
-      if (!fs.existsSync(dir)) {
-        ws.send("(アナウンス一覧) 現在アナウンスはありません");
-        return;
-      }
-
-      const files = fs.readdirSync(dir).filter(f => f.endsWith(".ann"));
-
-      if (files.length === 0) {
-        ws.send("(アナウンス一覧) 現在アナウンスはありません");
-        return;
-      }
-
-      ws.send("(アナウンス一覧)");
-
-      files.forEach(file => {
-        const sender = decodeURIComponent(file.replace(".ann", ""));
-        const full = path.join(dir, file);
-
-        const content = fs.readFileSync(full, "utf8").trim();
-        if (!content) return;
-
-        ws.send(`${sender} ${content}`);
-      });
-
-      return;
-    }
-
-    // -------------------------
-    // ⑨ /h ハンドル変更
-    // -------------------------
-    if (raw.startsWith("/h ")) {
-      const newHandle = raw.slice(3).trim();
-      if (!newHandle) {
-        ws.send("[/h {新ハンドル}] の形式で指定してください");
-        return;
-      }
-
-      const oldHandle = ws.handle;
-      ws.handle = newHandle;
-
-      broadcast(`[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`);
-
-      replayMessages(newHandle);
-      replayUMessages(newHandle, ws);
-
-      return;
-    }
-
-    // -------------------------
-    // ⑩ /q /l ログアウト
-    // -------------------------
-    if (raw === "/q" || raw === "/l") {
-      ws.isLogout = true;
-      saveLogoutTime(ws.handle, formatDateTime());
-      ws.close();
-      return;
-    }
-
-    // -------------------------
-    // ⑪ /? コマンド一覧（最後に置く）
-    // -------------------------
-    if (raw === "/?") {
-      ws.send("(コマンド一覧)");
-      ws.send("/w        : 在室者一覧");
-      ws.send("/rN       : ログの最後N行");
-      ws.send("/rn       : 前回ログアウト以降のログ");
-      ws.send("/p ID msg : 個別チャット");
-      ws.send("/m msg>>h : 裏伝言");
-      ws.send("/a {msg}  : アナウンス発信");
-      ws.send("/a        : 自分のアナウンス削除");
-      ws.send("/al       : アナウンス一覧表示");
-      ws.send("/h {name} : ハンドル名変更");
-      ws.send("/q /l     : ログアウト");
-      ws.send("/?        : この一覧を表示");
-      return;
-    }
-
-    // -------------------------
-    // 🔥 通常発言
-    // -------------------------
-    const msg = `[${timestamp()}] ${ws.handle}: ${raw}`;
-    broadcast(msg);
-
+    // 通常発言
+    broadcast(`[${timestamp()}] ${ws.handle}: ${raw}`);
     ws.lastActive = Date.now();
 
-    // -------------------------
-    // 🔥 通常伝言
-    // -------------------------
+    // 通常伝言
     if (raw.includes(">>")) {
       const [body, targetHandle] = raw.split(">>");
       if (body && targetHandle) {
-        saveMessage(targetHandle, `${ws.handle}: ${body}`);
+        fs.appendFileSync(filePath("msg", targetHandle), `${ws.handle}: ${body}\n`);
         ws.send(`伝言を ${targetHandle} に預かりました`);
       }
     }
   });
 
-  // =========================================================
-  // 🔥 接続終了処理
-  // =========================================================
-  ws.on('close', () => {
-    if (ws.handle !== null) {
+  // 接続終了処理
+  ws.on("close", () => {
+    if (ws.handle) {
       const msg = ws.isLogout
         ? `*** ${ws.handle} がログアウトしました ***`
         : `*** ${ws.handle} の接続が切れました ***`;
-
       broadcast(`[${timestamp()}] ${msg}`);
     }
   });
