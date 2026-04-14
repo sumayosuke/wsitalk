@@ -5,7 +5,7 @@ const path = require('path');
 // 🔥 親ディレクトリ（ログ）
 const LOG_PARENT = "logs";
 
-// 🔥 親ディレクトリ（伝言）
+// 🔥 親ディレクトリ（伝言 + utmp）
 const MSG_PARENT = "messages";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
@@ -52,9 +52,8 @@ function timestamp() {
   return d.toTimeString().split(' ')[0];
 }
 
-// 🔥 ログイン日時保存用（YYYY-MM-DD HH:MM:SS）
-function loginTimestamp() {
-  const d = new Date();
+// 🔥 日時（YYYY-MM-DD HH:MM:SS）
+function formatDateTime(d = new Date()) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -113,10 +112,34 @@ function getMessageFilePath(handle) {
   return path.join(dir, `${safe}.msg`);
 }
 
+// 🔥 utmp ファイルパス（ハンドル名ベース）
+function getUtmpFilePath(handle) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const safe = encodeURIComponent(handle);
+  return path.join(dir, `${safe}.utmp`);
+}
+
 // 🔥 伝言保存
 function saveMessage(targetHandle, message) {
   const file = getMessageFilePath(targetHandle);
   fs.appendFileSync(file, message + "\n");
+}
+
+// 🔥 ログアウト時刻保存
+function saveLogoutTime(handle, time) {
+  const file = getUtmpFilePath(handle);
+  fs.writeFileSync(file, time);
+}
+
+// 🔥 前回ログアウト時刻読み込み
+function loadLogoutTime(handle) {
+  const file = getUtmpFilePath(handle);
+  if (!fs.existsSync(file)) return null;
+  return fs.readFileSync(file, "utf8").trim();
 }
 
 // 🔥 伝言を再生（ログイン時）
@@ -153,10 +176,15 @@ wss.on('connection', (ws) => {
       ws.id = nextUserId++;
 
       // 🔥 ログイン時刻をメモリに保存
-      ws.loginTime = loginTimestamp();
-
-      // 🔥 最終発言時刻もログイン時刻で初期化
+      ws.loginTime = formatDateTime();
       ws.lastActive = Date.now();
+
+      // 🔥 前回ログアウト時刻があれば本人にだけ通知
+      const prevLogout = loadLogoutTime(ws.handle);
+      if (prevLogout) {
+        ws.send(`前回ログアウト時刻: ${prevLogout}`);
+        fs.unlinkSync(getUtmpFilePath(ws.handle));
+      }
 
       const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
       broadcast(msg);
@@ -240,6 +268,10 @@ wss.on('connection', (ws) => {
     // -------------------------
     if (raw === "/q" || raw === "/l") {
       ws.isLogout = true;
+
+      // 🔥 ログアウト時刻をファイルに保存
+      saveLogoutTime(ws.handle, formatDateTime());
+
       ws.close();
       return;
     }
