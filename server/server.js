@@ -74,6 +74,22 @@ function formatDuration(sec) {
   return `${s}s`;
 }
 
+// 🔥 YYYYMMDD → Date
+function parseDateYMD(ymd) {
+  const y = parseInt(ymd.slice(0,4), 10);
+  const m = parseInt(ymd.slice(4,6), 10) - 1;
+  const d = parseInt(ymd.slice(6,8), 10);
+  return new Date(y, m, d);
+}
+
+// 🔥 Date → YYYYMMDD
+function formatYMD(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
 // broadcast は「送信＋ログ保存」だけの純粋な処理
 function broadcast(text) {
   wss.clients.forEach((client) => {
@@ -286,6 +302,72 @@ wss.on('connection', (ws) => {
         sendRecentLog(ws, num);
       } else {
         ws.send("[/r{行数} の形式で指定してください]");
+      }
+
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /rn 前回ログアウト時刻以降のログを返す
+    // -------------------------
+    if (raw === "/rn") {
+      const prev = loadLogoutTime(ws.handle);
+      if (!prev) {
+        ws.send("前回ログアウト時刻が記録されていません");
+        return;
+      }
+
+      const prevDate = new Date(prev);
+      const startYMD = formatYMD(prevDate);
+
+      const today = new Date();
+      const endYMD = formatYMD(today);
+
+      let cur = parseDateYMD(startYMD);
+
+      while (formatYMD(cur) <= endYMD) {
+        const ymd = formatYMD(cur);
+        const logFile = path.join(LOG_PARENT, String(port), `${ymd}.italk`);
+
+        if (fs.existsSync(logFile)) {
+          const content = fs.readFileSync(logFile, "utf8");
+          const lines = content.trim().split("\n");
+
+          let sending = false;
+
+          lines.forEach(line => {
+            if (!sending) {
+              const m = line.match(/^
+
+\[(\d\d):(\d\d):(\d\d)\]
+
+/);
+
+              if (m) {
+                const hh = parseInt(m[1], 10);
+                const mm = parseInt(m[2], 10);
+                const ss = parseInt(m[3], 10);
+
+                const lineDate = new Date(
+                  cur.getFullYear(),
+                  cur.getMonth(),
+                  cur.getDate(),
+                  hh, mm, ss
+                );
+
+                if (lineDate >= prevDate) {
+                  sending = true;
+                }
+              }
+            }
+
+            if (sending) {
+              ws.send(line);
+            }
+          });
+        }
+
+        cur.setDate(cur.getDate() + 1);
       }
 
       return;
