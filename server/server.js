@@ -85,7 +85,11 @@ function getMessageFilePath(handle) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  return path.join(dir, `${handle}.msg`);
+
+  // 🔥 ハンドル名を URL エンコードして ASCII のみのファイル名にする
+  const safe = encodeURIComponent(handle);
+
+  return path.join(dir, `${safe}.msg`);
 }
 
 // 🔥 伝言を保存
