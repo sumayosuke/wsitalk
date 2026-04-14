@@ -5,7 +5,7 @@ const path = require('path');
 // 🔥 親ディレクトリ（ログ）
 const LOG_PARENT = "logs";
 
-// 🔥 親ディレクトリ（伝言 + utmp）
+// 🔥 親ディレクトリ（伝言 + utmp + umsg）
 const MSG_PARENT = "messages";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
@@ -128,7 +128,18 @@ function getMessageFilePath(handle) {
   return path.join(dir, `${safe}.msg`);
 }
 
-// 🔥 utmp ファイルパス（ハンドル名ベース）
+// 🔥 裏伝言ファイルパス
+function getUMessageFilePath(handle) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const safe = encodeURIComponent(handle);
+  return path.join(dir, `${safe}.umsg`);
+}
+
+// 🔥 utmp ファイルパス（ログアウト時刻）
 function getUtmpFilePath(handle) {
   const dir = path.join(MSG_PARENT, String(port));
   if (!fs.existsSync(dir)) {
@@ -142,6 +153,12 @@ function getUtmpFilePath(handle) {
 // 🔥 伝言保存
 function saveMessage(targetHandle, message) {
   const file = getMessageFilePath(targetHandle);
+  fs.appendFileSync(file, message + "\n");
+}
+
+// 🔥 裏伝言保存
+function saveUMessage(targetHandle, message) {
+  const file = getUMessageFilePath(targetHandle);
   fs.appendFileSync(file, message + "\n");
 }
 
@@ -173,6 +190,21 @@ function replayMessages(handle) {
   fs.unlinkSync(file);
 }
 
+// 🔥 裏伝言を再生（ログイン時）
+function replayUMessages(handle, ws) {
+  const file = getUMessageFilePath(handle);
+  if (!fs.existsSync(file)) return;
+
+  const content = fs.readFileSync(file, "utf8");
+  const lines = content.trim().split("\n");
+
+  lines.forEach(line => {
+    ws.send(`(裏伝言) ${line}`);
+  });
+
+  fs.unlinkSync(file);
+}
+
 wss.on('connection', (ws) => {
   ws.handle = null;
   ws.id = null;
@@ -191,11 +223,9 @@ wss.on('connection', (ws) => {
       ws.handle = raw || "匿名";
       ws.id = nextUserId++;
 
-      // 🔥 ログイン時刻をメモリに保存
       ws.loginTime = formatDateTime();
       ws.lastActive = Date.now();
 
-      // 🔥 前回ログアウト時刻があれば本人にだけ通知
       const prevLogout = loadLogoutTime(ws.handle);
       if (prevLogout) {
         ws.send(`前回ログアウト時刻: ${prevLogout}`);
@@ -207,14 +237,32 @@ wss.on('connection', (ws) => {
 
       sendRecentLog(ws, 10);
 
-      // 🔥 伝言があれば再生
       replayMessages(ws.handle);
+      replayUMessages(ws.handle, ws);
 
       return;
     }
 
     // -------------------------
-    // 🔥 /w コマンド（ログイン時刻 + 最終発言からの経過時間）
+    // 🔥 /m {message}>>{handle}（裏伝言）
+    // -------------------------
+    if (raw.startsWith("/m ") && raw.includes(">>")) {
+      const body = raw.slice(3);
+      const [message, targetHandle] = body.split(">>");
+
+      if (!message || !targetHandle) {
+        ws.send("[/m {message}>>{handle}] の形式で指定してください");
+        return;
+      }
+
+      saveUMessage(targetHandle, `${ws.handle}: ${message}`);
+      ws.send(`裏伝言を ${targetHandle} に預かりました`);
+
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /w コマンド
     // -------------------------
     if (raw === "/w") {
       const now = Date.now();
@@ -273,7 +321,6 @@ wss.on('connection', (ws) => {
       ws.send(`[${time}] (p) → ${targetName}: ${message}`);
       target.send(`[${time}] (p) ${senderName} → あなた: ${message}`);
 
-      // 🔥 最終発言時刻更新
       ws.lastActive = Date.now();
 
       return;
@@ -285,7 +332,6 @@ wss.on('connection', (ws) => {
     if (raw === "/q" || raw === "/l") {
       ws.isLogout = true;
 
-      // 🔥 ログアウト時刻をファイルに保存
       saveLogoutTime(ws.handle, formatDateTime());
 
       ws.close();
@@ -293,7 +339,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /r{行数} コマンド
+    // 🔥 /r{行数}
     // -------------------------
     if (raw.startsWith("/r")) {
       const num = parseInt(raw.slice(2), 10);
@@ -308,7 +354,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /rn 前回ログアウト時刻以降のログを返す
+    // 🔥 /rn 前回ログアウト時刻以降のログ
     // -------------------------
     if (raw === "/rn") {
       const prev = loadLogoutTime(ws.handle);
@@ -374,16 +420,15 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 通常発言（伝言含む） → まずログ記録 & broadcast
+    // 🔥 通常発言
     // -------------------------
     const msg = `[${timestamp()}] ${ws.handle}: ${raw}`;
     broadcast(msg);
 
-    // 🔥 最終発言時刻更新
     ws.lastActive = Date.now();
 
     // -------------------------
-    // 🔥 broadcast の後で伝言処理
+    // 🔥 通常伝言（message>>handle）
     // -------------------------
     if (raw.includes(">>")) {
       const [body, targetHandle] = raw.split(">>");
