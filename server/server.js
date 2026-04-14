@@ -5,7 +5,7 @@ const path = require('path');
 // 🔥 親ディレクトリ（ログ）
 const LOG_PARENT = "logs";
 
-// 🔥 親ディレクトリ（伝言 + utmp + umsg）
+// 🔥 親ディレクトリ（伝言 + utmp + umsg + ann）
 const MSG_PARENT = "messages";
 
 const port = process.argv[2] ? Number(process.argv[2]) : 8080;
@@ -117,72 +117,89 @@ function sendRecentLog(ws, num) {
   });
 }
 
-// 🔥 伝言ファイルパス（ハンドル名は URL エンコード）
+// 🔥 各種ファイルパス
 function getMessageFilePath(handle) {
   const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const safe = encodeURIComponent(handle);
-  return path.join(dir, `${safe}.msg`);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${encodeURIComponent(handle)}.msg`);
 }
 
-// 🔥 裏伝言ファイルパス
 function getUMessageFilePath(handle) {
   const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const safe = encodeURIComponent(handle);
-  return path.join(dir, `${safe}.umsg`);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${encodeURIComponent(handle)}.umsg`);
 }
 
-// 🔥 utmp ファイルパス（ログアウト時刻）
 function getUtmpFilePath(handle) {
   const dir = path.join(MSG_PARENT, String(port));
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const safe = encodeURIComponent(handle);
-  return path.join(dir, `${safe}.utmp`);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${encodeURIComponent(handle)}.utmp`);
 }
 
-// 🔥 伝言保存
+function getAnnFilePath(handle) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${encodeURIComponent(handle)}.ann`);
+}
+
+// 🔥 保存処理
 function saveMessage(targetHandle, message) {
-  const file = getMessageFilePath(targetHandle);
-  fs.appendFileSync(file, message + "\n");
+  fs.appendFileSync(getMessageFilePath(targetHandle), message + "\n");
 }
 
-// 🔥 裏伝言保存
 function saveUMessage(targetHandle, message) {
-  const file = getUMessageFilePath(targetHandle);
-  fs.appendFileSync(file, message + "\n");
+  fs.appendFileSync(getUMessageFilePath(targetHandle), message + "\n");
 }
 
-// 🔥 ログアウト時刻保存
 function saveLogoutTime(handle, time) {
-  const file = getUtmpFilePath(handle);
-  fs.writeFileSync(file, time);
+  fs.writeFileSync(getUtmpFilePath(handle), time);
 }
 
-// 🔥 前回ログアウト時刻読み込み
 function loadLogoutTime(handle) {
   const file = getUtmpFilePath(handle);
   if (!fs.existsSync(file)) return null;
   return fs.readFileSync(file, "utf8").trim();
 }
 
-// 🔥 伝言を再生（ログイン時）
+// 🔥 アナウンス再生（全ユーザーの .ann をチェック）
+function replayAllAnnounce(ws, prevLogout) {
+  const dir = path.join(MSG_PARENT, String(port));
+  if (!fs.existsSync(dir)) return;
+
+  const prev = new Date(prevLogout);
+  const files = fs.readdirSync(dir);
+
+  files.forEach(file => {
+    if (!file.endsWith(".ann")) return;
+
+    const sender = decodeURIComponent(file.replace(".ann", ""));
+    const full = path.join(dir, file);
+
+    const content = fs.readFileSync(full, "utf8").trim();
+    if (!content) return;
+
+    // content は "[日時] 内容"
+    const m = content.match(/^
+
+\[(.*?)\]
+
+ (.*)$/);
+    if (!m) return;
+
+    const time = new Date(m[1]);
+
+    if (time > prev) {
+      ws.send(`(アナウンス) ${sender} ${content}`);
+    }
+  });
+}
+
+// 🔥 通常伝言再生
 function replayMessages(handle) {
   const file = getMessageFilePath(handle);
   if (!fs.existsSync(file)) return;
 
-  const content = fs.readFileSync(file, "utf8");
-  const lines = content.trim().split("\n");
-
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n");
   lines.forEach(line => {
     broadcast(`[${timestamp()}] (伝言) ${handle} 宛: ${line}`);
   });
@@ -190,14 +207,12 @@ function replayMessages(handle) {
   fs.unlinkSync(file);
 }
 
-// 🔥 裏伝言を再生（ログイン時）
+// 🔥 裏伝言再生
 function replayUMessages(handle, ws) {
   const file = getUMessageFilePath(handle);
   if (!fs.existsSync(file)) return;
 
-  const content = fs.readFileSync(file, "utf8");
-  const lines = content.trim().split("\n");
-
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n");
   lines.forEach(line => {
     ws.send(`(裏伝言) ${line}`);
   });
@@ -210,14 +225,14 @@ wss.on('connection', (ws) => {
   ws.id = null;
   ws.isLogout = false;
 
-  ws.loginTime = null;   // 🔥 ログイン時刻（メモリ）
-  ws.lastActive = null;  // 🔥 最終発言時刻（メモリ）
+  ws.loginTime = null;
+  ws.lastActive = null;
 
   ws.on('message', (data) => {
     const raw = data.toString().trim();
 
     // -------------------------
-    // 🔥 ログイン前（最初のメッセージ）
+    // 🔥 ログイン処理
     // -------------------------
     if (ws.handle === null) {
       ws.handle = raw || "匿名";
@@ -229,11 +244,14 @@ wss.on('connection', (ws) => {
       const prevLogout = loadLogoutTime(ws.handle);
       if (prevLogout) {
         ws.send(`前回ログアウト時刻: ${prevLogout}`);
+
+        // 🔥 全ユーザーのアナウンスをチェック
+        replayAllAnnounce(ws, prevLogout);
+
         fs.unlinkSync(getUtmpFilePath(ws.handle));
       }
 
-      const msg = `[${timestamp()}] *** ${ws.handle} が入室しました ***`;
-      broadcast(msg);
+      broadcast(`[${timestamp()}] *** ${ws.handle} が入室しました ***`);
 
       sendRecentLog(ws, 10);
 
@@ -244,22 +262,80 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /h {新ハンドル}（ハンドル変更）
+    // 🔥 /al アナウンス一覧（先に判定）
+    // -------------------------
+    if (raw === "/al") {
+      const dir = path.join(MSG_PARENT, String(port));
+
+      if (!fs.existsSync(dir)) {
+        ws.send("(アナウンス一覧) 現在アナウンスはありません");
+        return;
+      }
+
+      const files = fs.readdirSync(dir).filter(f => f.endsWith(".ann"));
+
+      if (files.length === 0) {
+        ws.send("(アナウンス一覧) 現在アナウンスはありません");
+        return;
+      }
+
+      ws.send("(アナウンス一覧)");
+
+      files.forEach(file => {
+        const sender = decodeURIComponent(file.replace(".ann", ""));
+        const full = path.join(dir, file);
+
+        const content = fs.readFileSync(full, "utf8").trim();
+        if (!content) return;
+
+        ws.send(`${sender} ${content}`);
+      });
+
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /a アナウンス（削除 or 発信）
+    // -------------------------
+    if (raw === "/a") {
+      const file = getAnnFilePath(ws.handle);
+
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+        broadcast(`[${timestamp()}] *** ${ws.handle} のアナウンスが削除されました ***`);
+      }
+
+      return;
+    }
+
+    if (raw.startsWith("/a ")) {
+      const ann = raw.slice(3).trim();
+      if (!ann) {
+        ws.send("[/a {アナウンス}] の形式で指定してください");
+        return;
+      }
+
+      broadcast(`[${timestamp()}] (アナウンス) ${ws.handle}: ${ann}`);
+
+      fs.writeFileSync(getAnnFilePath(ws.handle), `[${formatDateTime()}] ${ann}`);
+
+      return;
+    }
+
+    // -------------------------
+    // 🔥 /h ハンドル変更
     // -------------------------
     if (raw.startsWith("/h ")) {
       const newHandle = raw.slice(3).trim();
-
       if (!newHandle) {
         ws.send("[/h {新ハンドル}] の形式で指定してください");
         return;
       }
 
       const oldHandle = ws.handle;
-
       ws.handle = newHandle;
 
-      const msg = `[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`;
-      broadcast(msg);
+      broadcast(`[${timestamp()}] *** ${oldHandle} はハンドルを ${newHandle} に変更しました ***`);
 
       replayMessages(newHandle);
       replayUMessages(newHandle, ws);
@@ -268,7 +344,7 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /m {message}>>{handle}（裏伝言）
+    // 🔥 /m 裏伝言
     // -------------------------
     if (raw.startsWith("/m ") && raw.includes(">>")) {
       const body = raw.slice(3);
@@ -286,78 +362,59 @@ wss.on('connection', (ws) => {
     }
 
     // -------------------------
-    // 🔥 /w コマンド
+    // 🔥 /w
     // -------------------------
     if (raw === "/w") {
       const now = Date.now();
-      const lines = [];
-
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN && client.handle) {
           const idStr = String(client.id).padStart(4, "0");
-
-          const logintime = client.loginTime || "unknown";
-
-          const last = client.lastActive || now;
-          const diffSec = Math.floor((now - last) / 1000);
+          const logintime = client.loginTime;
+          const diffSec = Math.floor((now - client.lastActive) / 1000);
           const elapsed = formatDuration(diffSec);
-
-          lines.push(`${idStr} ${client.handle} ${logintime} ${elapsed}`);
+          ws.send(`${idStr} ${client.handle} ${logintime} ${elapsed}`);
         }
       });
-
-      lines.forEach(line => ws.send(line));
       return;
     }
 
     // -------------------------
-    // 🔥 /p {ID} {message}
+    // 🔥 /p 個別チャット
     // -------------------------
     if (raw.startsWith("/p ")) {
       const parts = raw.split(" ");
-
       if (parts.length < 3) {
         ws.send("[/p {ID} {message}] の形式で指定してください");
         return;
       }
 
-      const targetIdStr = parts[1];
-      const targetId = parseInt(targetIdStr, 10);
+      const targetId = parseInt(parts[1], 10);
       const message = parts.slice(2).join(" ");
 
       let target = null;
-
       wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN && client.id === targetId) {
-          target = client;
-        }
+        if (client.id === targetId) target = client;
       });
 
       if (!target) {
-        ws.send(`ID ${targetIdStr} のユーザーは見つかりません`);
+        ws.send(`ID ${parts[1]} のユーザーは見つかりません`);
         return;
       }
 
       const time = timestamp();
-      const senderName = ws.handle;
-      const targetName = target.handle;
-
-      ws.send(`[${time}] (p) → ${targetName}: ${message}`);
-      target.send(`[${time}] (p) ${senderName} → あなた: ${message}`);
+      ws.send(`[${time}] (p) → ${target.handle}: ${message}`);
+      target.send(`[${time}] (p) ${ws.handle} → あなた: ${message}`);
 
       ws.lastActive = Date.now();
-
       return;
     }
 
     // -------------------------
-    // 🔥 /q, /l ログアウト
+    // 🔥 /q /l ログアウト
     // -------------------------
     if (raw === "/q" || raw === "/l") {
       ws.isLogout = true;
-
       saveLogoutTime(ws.handle, formatDateTime());
-
       ws.close();
       return;
     }
@@ -367,18 +424,13 @@ wss.on('connection', (ws) => {
     // -------------------------
     if (raw.startsWith("/r")) {
       const num = parseInt(raw.slice(2), 10);
-
-      if (!isNaN(num) && num > 0) {
-        sendRecentLog(ws, num);
-      } else {
-        ws.send("[/r{行数} の形式で指定してください]");
-      }
-
+      if (!isNaN(num) && num > 0) sendRecentLog(ws, num);
+      else ws.send("[/r{行数}] の形式で指定してください");
       return;
     }
 
     // -------------------------
-    // 🔥 /rn 前回ログアウト時刻以降のログ
+    // 🔥 /rn 前回ログアウト以降のログ
     // -------------------------
     if (raw === "/rn") {
       const prev = loadLogoutTime(ws.handle);
@@ -389,9 +441,7 @@ wss.on('connection', (ws) => {
 
       const prevDate = new Date(prev);
       const startYMD = formatYMD(prevDate);
-
-      const today = new Date();
-      const endYMD = formatYMD(today);
+      const endYMD = formatYMD(new Date());
 
       let cur = parseDateYMD(startYMD);
 
@@ -400,9 +450,7 @@ wss.on('connection', (ws) => {
         const logFile = path.join(LOG_PARENT, String(port), `${ymd}.italk`);
 
         if (fs.existsSync(logFile)) {
-          const content = fs.readFileSync(logFile, "utf8");
-          const lines = content.trim().split("\n");
-
+          const lines = fs.readFileSync(logFile, "utf8").trim().split("\n");
           let sending = false;
 
           lines.forEach(line => {
@@ -412,28 +460,19 @@ wss.on('connection', (ws) => {
 \[(\d\d):(\d\d):(\d\d)\]
 
 /);
-
               if (m) {
-                const hh = parseInt(m[1], 10);
-                const mm = parseInt(m[2], 10);
-                const ss = parseInt(m[3], 10);
-
                 const lineDate = new Date(
                   cur.getFullYear(),
                   cur.getMonth(),
                   cur.getDate(),
-                  hh, mm, ss
+                  parseInt(m[1], 10),
+                  parseInt(m[2], 10),
+                  parseInt(m[3], 10)
                 );
-
-                if (lineDate >= prevDate) {
-                  sending = true;
-                }
+                if (lineDate >= prevDate) sending = true;
               }
             }
-
-            if (sending) {
-              ws.send(line);
-            }
+            if (sending) ws.send(line);
           });
         }
 
@@ -452,11 +491,10 @@ wss.on('connection', (ws) => {
     ws.lastActive = Date.now();
 
     // -------------------------
-    // 🔥 通常伝言（message>>handle）
+    // 🔥 通常伝言
     // -------------------------
     if (raw.includes(">>")) {
       const [body, targetHandle] = raw.split(">>");
-
       if (body && targetHandle) {
         saveMessage(targetHandle, `${ws.handle}: ${body}`);
         ws.send(`伝言を ${targetHandle} に預かりました`);
@@ -466,14 +504,11 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (ws.handle !== null) {
-      const base = ws.isLogout
+      const msg = ws.isLogout
         ? `*** ${ws.handle} がログアウトしました ***`
         : `*** ${ws.handle} の接続が切れました ***`;
 
-      const msg = `[${timestamp()}] ${base}`;
-      broadcast(msg);
-
-      console.log(msg);
+      broadcast(`[${timestamp()}] ${msg}`);
     }
   });
 });
